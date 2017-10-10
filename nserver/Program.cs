@@ -16,6 +16,7 @@ namespace nserver {
 		IPAddress[] rAddr;
 		int rPort;
 		int nCount = 1;
+		string proto = "udp";
 
 		public Program (string[] args)
 		{
@@ -40,20 +41,32 @@ namespace nserver {
 					if (opt.Equals("n")) {
 						nCount = int.Parse(args[++i]);
 					}
+
+					if (opt.Equals("proto")) {
+						proto = args[++i];
+					}
 				}
 			}
 
 			List<Task> taskList = new List<Task>();
 			if (lAddr != null) {
 				foreach (var addr in lAddr) {
-					taskList.Add(Server(new IPEndPoint(addr, lPort)));
+					if (proto.Equals("udp")) {
+						taskList.Add(Server(new IPEndPoint(addr, lPort)));
+					} else {
+						taskList.Add(TcpServer(new IPEndPoint(addr, lPort)));
+					}
 				}
 			}
 
 			if(rAddr != null) {
 				foreach (var addr in rAddr) {
 					for (int i = 0; i < nCount; ++i) {
-						taskList.Add(Client(new IPEndPoint(addr, rPort)));
+						if (proto.Equals("udp")) {
+							taskList.Add(Client(new IPEndPoint(addr, rPort)));
+						} else {
+							taskList.Add(TcpClient(new IPEndPoint(addr, rPort)));
+						}
 					}
 				}
 			}
@@ -80,17 +93,15 @@ namespace nserver {
 					Dictionary<EndPoint, Socket> dict = new Dictionary<EndPoint, Socket>();
 
 					SocketAsyncEventArgs e = new SocketAsyncEventArgs();
-					e.SetBuffer(buffer, 0, 1024 * 4);
-					e.RemoteEndPoint = new IPEndPoint(IPAddress.Any, 0);
+					//e.RemoteEndPoint = new IPEndPoint(IPAddress.Any, 0);
 					e.Completed += (sender, args) => {
-						var len = e.BytesTransferred;
 						Socket a;
-						if (!dict.TryGetValue(e.RemoteEndPoint, out a)) {
-							dict[e.RemoteEndPoint] = s;
-							TcpRemote(ep, e.RemoteEndPoint, e.AcceptSocket);
+						var rep = e.AcceptSocket.RemoteEndPoint;
+						if (!dict.TryGetValue(rep, out a)) {
+							dict[rep] = s;
+							TcpRemote(ep, rep, e.AcceptSocket);
 						} else {
-							var text = System.Text.Encoding.UTF8.GetString(e.Buffer, 0, e.BytesTransferred);
-							Console.WriteLine("remote " + e.RemoteEndPoint.ToString() + " recv:" + text);
+							Console.WriteLine("remote " + rep.ToString());
 						}
 						if (dict.Count == nCount) {
 							//s.Close();
@@ -98,9 +109,11 @@ namespace nserver {
 						} else {
 							//s.ReceiveFromAsync(e);
 						}
-						s.ReceiveFromAsync(e);
+						e.AcceptSocket = null;
+						s.AcceptAsync(e);
 						//s.Close();
 					};
+					e.AcceptSocket = null;
 					s.AcceptAsync(e);
 
 					//EndPoint rep = new IPEndPoint(IPAddress.Any, 0);
@@ -139,7 +152,7 @@ namespace nserver {
 				}
 
 				while (true) {
-					s.Send(System.Text.Encoding.UTF8.GetBytes("test"));
+					//s.Send(System.Text.Encoding.UTF8.GetBytes("test"));
 					System.Threading.Thread.Sleep(1000);
 				}
 			});
@@ -162,39 +175,32 @@ namespace nserver {
 					e.SetBuffer(buffer, 0, 1024 * 4);
 					e.RemoteEndPoint = new IPEndPoint(IPAddress.Any, 0);
 					e.Completed += (sender, args) => {
+						Console.WriteLine("server:recv");
 						var len = e.BytesTransferred;
 						Socket a;
+
 						if (!dict.TryGetValue(e.RemoteEndPoint, out a)) {
 							dict[e.RemoteEndPoint] = s;
-							Remote(ep, e.RemoteEndPoint, buffer, len);
+							var data = new byte[len];
+							System.Array.Copy(buffer, data, len);
+							Remote(ep, e.RemoteEndPoint, data, len);
 						} else {
 							var text = System.Text.Encoding.UTF8.GetString(e.Buffer, 0, e.BytesTransferred);
 							Console.WriteLine("remote " + e.RemoteEndPoint.ToString() + " recv:" + text);
 						}
 						if (dict.Count == nCount) {
-							//s.Close();
-							//Console.WriteLine("close");
+							//s.Shutdown(SocketShutdown.Both);
+							s.Close();
+							Console.WriteLine("server:close");
 						} else {
-							//s.ReceiveFromAsync(e);
+							e.RemoteEndPoint = new IPEndPoint(IPAddress.Any, 0);
+							s.ReceiveFromAsync(e);
+							Console.WriteLine("server:ReceiveFromAsync");
 						}
-						s.ReceiveFromAsync(e);
+						//s.ReceiveFromAsync(e);
 						//s.Close();
 					};
 					s.ReceiveFromAsync(e);
-
-					//EndPoint rep = new IPEndPoint(IPAddress.Any, 0);
-					//s.BeginReceiveFrom(buffer, 0, 1024 * 4, SocketFlags.None, ref rep, ar => {
-					//	var len = s.EndReceiveFrom(ar, ref rep);
-					//	Socket a;
-					//	if (!dict.TryGetValue(rep, out a)) {
-					//		dict[e.RemoteEndPoint] = s;
-					//		Remote(ep, rep, buffer, len);
-					//	}
-					//	//s.Close();
-					//}, s);
-					//s.ReceiveFromAsync(e);
-
-					//EndPoint rep = new IPEndPoint(IPAddress.Any, 0);
 
 					while (true) {
 						System.Threading.Thread.Sleep(1000);
@@ -213,10 +219,10 @@ namespace nserver {
 
 					string text = System.Text.Encoding.UTF8.GetString(data, 0, dataSize);
 					Console.WriteLine("accept:" + s.LocalEndPoint.ToString() + ":" + s.RemoteEndPoint.ToString() + ":" + text);
-					byte[] buffer = new byte[1024 * 4];
 
 					SocketAsyncEventArgs e = new SocketAsyncEventArgs();
-					e.SetBuffer(new byte[1024 * 4], 0, 1024 * 4);
+					byte[] buffer = new byte[1024 * 4];
+					e.SetBuffer(buffer, 0, 1024 * 4);
 					e.RemoteEndPoint = rep;
 					e.Completed += RemoteRecv_Completed;
 					if (!s.ReceiveAsync(e)) {
@@ -224,7 +230,7 @@ namespace nserver {
 					}
 
 					while (true) {
-						s.Send(System.Text.Encoding.UTF8.GetBytes("test"));
+						//s.Send(System.Text.Encoding.UTF8.GetBytes("test"));
 						System.Threading.Thread.Sleep(1000);
 					}
 				}
@@ -235,7 +241,8 @@ namespace nserver {
 		{
 			Socket s = (Socket)sender;
 			var text = System.Text.Encoding.UTF8.GetString(e.Buffer, 0, e.BytesTransferred);
-			Console.WriteLine("remote " + e.RemoteEndPoint.ToString() + " recv:" + text);
+			//Console.WriteLine("rr " + e.RemoteEndPoint.ToString() + " recv:" + text);
+			s.Send(e.Buffer, e.BytesTransferred, SocketFlags.None);
 			s.ReceiveAsync(e);
 		}
 
@@ -255,7 +262,7 @@ namespace nserver {
 					s.ReceiveAsync(e);
 
 					while (true) {
-						string line = string.Format("test:{0}", count++);
+						string line = string.Format("test:{0} {1}", count++, s.LocalEndPoint.ToString());
 						Console.WriteLine(Thread.CurrentThread.ManagedThreadId + " client " + s.LocalEndPoint.ToString() + " send:" + line);
 						var data = System.Text.Encoding.UTF8.GetBytes(line);
 						s.Send(data);
@@ -271,6 +278,32 @@ namespace nserver {
 			string text = System.Text.Encoding.UTF8.GetString(e.Buffer, 0, e.BytesTransferred);
 			Console.WriteLine(Thread.CurrentThread.ManagedThreadId + " client " + s.LocalEndPoint.ToString() + " recv:" + e.BytesTransferred + ":" + text);
 			s.ReceiveAsync(e);
+		}
+
+		public Task TcpClient (EndPoint ep)
+		{
+			return Task.Run(() => {
+				using (var s = new Socket(ep.AddressFamily, SocketType.Stream, ProtocolType.Tcp)) {
+					s.Connect(ep);
+
+					Console.WriteLine("client:" + s.LocalEndPoint.ToString() + ":" + s.RemoteEndPoint.ToString());
+					int count = 0;
+
+					SocketAsyncEventArgs e = new SocketAsyncEventArgs();
+					e.SetBuffer(new byte[1024 * 4], 0, 1024 * 4);
+					e.Completed += ClientRecv_Completed;
+					e.RemoteEndPoint = new IPEndPoint(IPAddress.Any, 0);
+					s.ReceiveAsync(e);
+
+					while (true) {
+						string line = string.Format("test:{0} {1}", count++, s.LocalEndPoint.ToString());
+						Console.WriteLine(Thread.CurrentThread.ManagedThreadId + " client " + s.LocalEndPoint.ToString() + " send:" + line);
+						var data = System.Text.Encoding.UTF8.GetBytes(line);
+						s.Send(data);
+						System.Threading.Thread.Sleep(1000);
+					}
+				}
+			});
 		}
 
 		public class Buffer {
